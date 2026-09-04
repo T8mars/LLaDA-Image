@@ -211,6 +211,22 @@ class ConvertComfyUIAIOTests(unittest.TestCase):
                     root, "transformer", "model.diffusion_model."
                 )
 
+    def test_unmapped_tensor_data_fails(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "source"
+            directory = root / "transformer"
+            directory.mkdir(parents=True)
+            self.write_safetensors(
+                directory / "model.safetensors", "x_pad_token", [1.0]
+            )
+            with (directory / "model.safetensors").open("ab") as handle:
+                handle.write(b"extra")
+
+            with self.assertRaisesRegex(ValueError, "trailing tensor-data bytes"):
+                converter.collect_component(
+                    root, "transformer", "model.diffusion_model."
+                )
+
     def test_source_lock_hash_mismatch_fails_before_writing(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "source"

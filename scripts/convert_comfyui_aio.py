@@ -94,6 +94,10 @@ def read_safetensors_header(path: Path) -> tuple[dict, int]:
             raise ValueError(
                 f"{path}: invalid safetensors header length {header_length}"
             )
+        if header_length % 8:
+            raise ValueError(
+                f"{path}: safetensors header length must be aligned to 8 bytes"
+            )
         header_data = handle.read(header_length)
     try:
         header = json.loads(header_data.decode("utf-8").rstrip(" "))
@@ -119,6 +123,7 @@ def collect_component(
     for path in files:
         header, data_start = read_safetensors_header(path)
         data_size = path.stat().st_size - data_start
+        data_ranges = []
         for source_key in sorted(key for key in header if key != "__metadata__"):
             entry = header[source_key]
             if not isinstance(entry, dict):
@@ -157,6 +162,7 @@ def collect_component(
                     f"duplicate source tensor key {source_key!r} in {source_keys[source_key]} and {path}"
                 )
             source_keys[source_key] = path
+            data_ranges.append((offsets[0], offsets[1], source_key))
             tensors.append(
                 TensorSource(
                     key=f"{prefix}{source_key}",
@@ -166,6 +172,18 @@ def collect_component(
                     path=path,
                     offset=data_start + offsets[0],
                 )
+            )
+        cursor = 0
+        for start, end, source_key in sorted(data_ranges):
+            if start != cursor:
+                raise ValueError(
+                    f"{path}: tensor data is not contiguous before {source_key}; "
+                    f"expected offset {cursor}, got {start}"
+                )
+            cursor = end
+        if cursor != data_size:
+            raise ValueError(
+                f"{path}: {data_size - cursor} trailing tensor-data bytes are not declared"
             )
     indexes = sorted(directory.glob("*.safetensors.index.json"))
     if len(indexes) > 1:
