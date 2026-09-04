@@ -1,10 +1,12 @@
 import argparse
 import hashlib
+import io
 import json
 import struct
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +14,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
 
 import convert_comfyui_aio as converter
+import convert_comfyui_aio_remote as remote_converter
 import verify_comfyui_shape_contract as shape_verifier
 
 
@@ -247,6 +250,63 @@ class ConvertComfyUIAIOTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
                 converter.convert(args)
             self.assertFalse(output.exists())
+
+    def test_remote_conversion_streams_locked_sources_into_aio(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "source"
+            root.mkdir()
+            expected = self.make_source(root)
+            output = Path(temporary_directory) / "remote.safetensors"
+            args = self.args(root, output)
+            remote_files = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in root.rglob("*")
+                if path.is_file()
+            }
+
+            def fake_read(url, byte_range=None):
+                path = urllib.parse.unquote(
+                    url.split(f"/{args.source_revision}/", 1)[1]
+                )
+                data = remote_files[path]
+                if byte_range is None:
+                    return data
+                return data[byte_range[0] : byte_range[1] + 1]
+
+            args.retries = 2
+            interrupted = {"transformer/model.safetensors"}
+
+            def fake_open(_args, path, start, _size):
+                data = remote_files[path][start:]
+                if path in interrupted:
+                    interrupted.remove(path)
+                    data = data[:-1]
+                return io.BytesIO(data)
+
+            with (
+                patch.object(remote_converter, "read_url", side_effect=fake_read),
+                patch.object(remote_converter, "open_remote", side_effect=fake_open),
+            ):
+                remote_converter.convert(args)
+
+            header, data_start = converter.read_safetensors_header(output)
+            self.assertEqual(set(header) - {"__metadata__"}, set(expected))
+            with output.open("rb") as checkpoint:
+                for key, value in expected.items():
+                    start, end = header[key]["data_offsets"]
+                    checkpoint.seek(data_start + start)
+                    self.assertEqual(checkpoint.read(end - start), value, key)
+
+    def test_remote_output_lock_rejects_concurrent_conversion(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "locked.safetensors"
+
+            with (
+                remote_converter.output_lock(output),
+                self.assertRaisesRegex(RuntimeError, "already using output"),
+                remote_converter.output_lock(output),
+            ):
+                self.fail("second lock unexpectedly succeeded")
 
 
 class ShapeContractVerifierTests(unittest.TestCase):

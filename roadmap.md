@@ -63,6 +63,10 @@ conversion version, dtype, and recommended workflow settings.
 Acceptance criteria:
 
 - [x] Converter reads HF shards without keeping multiple full copies in RAM.
+- [x] Remote converter can stream a pinned revision directly into the AIO output,
+  avoiding a second approximately 46 GiB local source copy while hashing every
+  locked source file; interrupted HTTP streams resume at the exact byte offset and
+  an exclusive output lock prevents concurrent partial-file races.
 - [x] Every source tensor is mapped exactly once; duplicate and unknown keys fail.
 - [x] Tensor shapes, dtypes, counts, hashes, and metadata are verified after write.
 - [ ] The output loads with `CheckpointLoaderSimple` with no missing or unexpected
@@ -89,8 +93,10 @@ Acceptance criteria:
 ### Conditioning stack
 
 - [x] Add a native LLaDA2 MoE text encoder using Core-managed operations.
-- [ ] Adapt expert banks to `comfy.ops.MoEExperts` and validate both numerical
-  parity and memory behavior against the upstream eager/fused path.
+- [x] Adapt expert banks to `comfy.ops.MoEExperts` and validate numerical parity
+  against the upstream eager path on a complete tiny model.
+- [ ] Validate full official expert-bank memory behavior under Core low-VRAM
+  loading/offloading.
 - [x] Implement the exact prompt renderer and tokenizer from embedded
   `tokenizer_json` bytes.
 - [x] Implement QueryFormer and its asymmetric text/query attention mask.
@@ -156,8 +162,9 @@ Turbo:
 - [x] Positive/negative CFG tests: semantic features are positive-only; source
   latents are present in both branches.
 - [ ] End-to-end text, VQ, and editing tests for Base and Turbo.
-- [ ] 1024x1024, non-square, batch, dimension-validation, CPU construction,
-  BF16 execution, low-VRAM offload/unload/reload, and NaN checks.
+- [x] 1024x1024, non-square, batch, dimension-validation, CPU construction, BF16
+  execution, meta unload/assign-reload, and finite-output checks.
+- [ ] Full official low-VRAM offload/unload/reload and memory-peak evidence.
 - [x] Compare captured intermediate tensors before judging final-image parity.
 - [ ] Publish reference images with prompt, seed, resolution, steps, CFG, sampler,
   scheduler, checkpoint revision, and measurable error tolerances.
@@ -177,8 +184,9 @@ gates below are collected.
   and the dedicated Turbo sampler.
 - [x] Keep the Core PR focused on native runtime, detection, minimal nodes, tests,
   and attribution.
-- [ ] Publish conversion tooling/manifests and converted checkpoints separately from
-  Core source if requested by maintainers.
+- [x] Publish conversion tooling and pinned manifests separately from Core source.
+- [ ] Publish converted checkpoints separately from Core source if requested by
+  maintainers.
 - [ ] Add official workflow templates/model download metadata in the appropriate
   ComfyUI repository after Core support is accepted.
 - [ ] Address review feedback without replacing the verified reference behavior with
@@ -186,7 +194,7 @@ gates below are collected.
 
 ## Current validation record
 
-- [x] Converter and remote shape-verifier unit tests: 10 passed.
+- [x] Local/remote converter and remote shape-verifier unit tests: 12 passed.
 - [x] Native LLaDA-Image tests plus the existing ComfyUI model-detection suite:
   60 passed locally on Core head
   `210bb5152e3cb8a13b451eddb54d67aaa0a32ca5`.
@@ -196,6 +204,12 @@ gates below are collected.
   Execution Tests on Linux, macOS, and Windows, Ruff, Pylint, server launch, line
   endings, CLA, AI co-author, and security checks. See the
   [Core PR checks](https://github.com/Comfy-Org/ComfyUI/pull/16095/checks).
+- [ ] Full Base conversion was attempted on the current host after the remote
+  streaming path had validated the 1,439-tensor plan. The host's HF/Xet large-file
+  connection repeatedly terminated early, while the official `hf_xet` client
+  remained at zero bytes. Complete this gate from the pinned local source or a host
+  with stable Hugging Face large-object access; the converter now resumes individual
+  interrupted streams at their exact byte offset and holds an exclusive output lock.
 - [ ] Full official BF16 checkpoint conversion and GPU parity evidence remain open
   completion gates; tiny-model and CPU test success are not substitutes for them.
 

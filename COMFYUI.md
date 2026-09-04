@@ -43,6 +43,24 @@ indexes and official component key spaces, embeds the tokenizer and every compon
 configuration, atomically installs the output, rereads its structure and SHA-256,
 and writes `<checkpoint>.manifest.json`.
 
+If there is not enough disk space for both the downloaded repository and the AIO
+output, stream the pinned revision directly. This path needs space only for the
+approximately 46 GiB output, reads each weight file sequentially, verifies every
+locked source-file SHA-256 while streaming, resumes prematurely closed streams from
+the exact byte offset, takes an exclusive output lock, and performs the same atomic
+write and post-write verification:
+
+```bash
+python scripts/convert_comfyui_aio_remote.py \
+  LLaDA-Image-Base-BF16-AIO.safetensors \
+  --variant base \
+  --source-repo inclusionAI/LLaDA-Image \
+  --source-revision e4e2703f410f7ddb6ee8d6b09dac6a8ec5093039
+```
+
+For Turbo, substitute its repository, pinned revision, output filename, and
+`--variant turbo` as above.
+
 ## Verify the native shape contract without downloading the weights
 
 The companion verifier reads only the bounded safetensors headers from the pinned
