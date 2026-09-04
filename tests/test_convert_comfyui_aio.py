@@ -6,11 +6,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
 
 import convert_comfyui_aio as converter
+import verify_comfyui_shape_contract as shape_verifier
 
 
 class ConvertComfyUIAIOTests(unittest.TestCase):
@@ -245,6 +247,76 @@ class ConvertComfyUIAIOTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
                 converter.convert(args)
             self.assertFalse(output.exists())
+
+
+class ShapeContractVerifierTests(unittest.TestCase):
+    def test_remote_url_pins_and_escapes_revision_and_path(self):
+        url = shape_verifier.remote_url(
+            "owner/model", "commit with space", "text encoder/model.safetensors"
+        )
+
+        self.assertEqual(
+            url,
+            "https://huggingface.co/owner/model/resolve/commit%20with%20space/"
+            "text%20encoder/model.safetensors",
+        )
+
+    def test_remote_safetensors_header_uses_bounded_ranges(self):
+        header = json.dumps(
+            {"weight": {"dtype": "BF16", "shape": [2, 3], "data_offsets": [0, 12]}},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        header += b" " * ((-len(header)) % 8)
+        calls = []
+
+        def fake_read(url, byte_range=None):
+            calls.append((url, byte_range))
+            if byte_range == (0, 7):
+                return struct.pack("<Q", len(header))
+            return header
+
+        with patch.object(shape_verifier, "read_url", side_effect=fake_read):
+            actual = shape_verifier.read_remote_safetensors_header(
+                "owner/model", "revision", "transformer/model.safetensors"
+            )
+
+        self.assertEqual(actual["weight"]["shape"], [2, 3])
+        self.assertEqual(calls[0][1], (0, 7))
+        self.assertEqual(calls[1][1], (8, 7 + len(header)))
+
+    def test_source_shapes_apply_aio_component_prefixes(self):
+        manifest = {
+            "source_repo": "owner/model",
+            "source_revision": "revision",
+            "files": [
+                {"path": "transformer/model.safetensors"},
+                {"path": "queryformer/model.safetensors"},
+                {"path": "vae/model.safetensors"},
+            ],
+        }
+        headers = {
+            "transformer/model.safetensors": {
+                "x_pad_token": {"shape": [1, 32]}
+            },
+            "queryformer/model.safetensors": {
+                "meta_queries": {"shape": [5, 16]}
+            },
+        }
+
+        with patch.object(
+            shape_verifier,
+            "read_remote_safetensors_header",
+            side_effect=lambda repo, revision, path: headers[path],
+        ):
+            actual = shape_verifier.source_shapes(manifest)
+
+        self.assertEqual(
+            actual,
+            {
+                "model.diffusion_model.x_pad_token": (1, 32),
+                "text_encoders.queryformer.meta_queries": (5, 16),
+            },
+        )
 
 
 if __name__ == "__main__":

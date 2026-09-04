@@ -43,6 +43,33 @@ indexes and official component key spaces, embeds the tokenizer and every compon
 configuration, atomically installs the output, rereads its structure and SHA-256,
 and writes `<checkpoint>.manifest.json`.
 
+## Verify the native shape contract without downloading the weights
+
+The companion verifier reads only the bounded safetensors headers from the pinned
+Hugging Face revision, constructs the native ComfyUI MODEL and CLIP modules on the
+PyTorch `meta` device, applies the same AIO load/save mapping, and compares every
+LLaDA-specific key and tensor shape. It does not download tensor payloads and does
+not replace full BF16 numerical or image-parity testing.
+
+```bash
+python scripts/verify_comfyui_shape_contract.py \
+  --comfyui-root /path/to/ComfyUI \
+  --manifest manifests/llada-image-base.source.json \
+  --variant base \
+  --source-repo inclusionAI/LLaDA-Image \
+  --source-revision e4e2703f410f7ddb6ee8d6b09dac6a8ec5093039
+
+python scripts/verify_comfyui_shape_contract.py \
+  --comfyui-root /path/to/ComfyUI \
+  --manifest manifests/llada-image-turbo.source.json \
+  --variant turbo \
+  --source-repo inclusionAI/LLaDA-Image-Turbo \
+  --source-revision f4afc52d925bbac4e22a1c947111fc1f127e37e5
+```
+
+At the pinned revisions, both variants contain 1,187 LLaDA-specific tensors and
+both complete key/shape comparisons pass against the submitted native Core port.
+
 ## Core graph contract
 
 - Load either AIO file with `CheckpointLoaderSimple`.
