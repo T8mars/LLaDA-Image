@@ -226,6 +226,10 @@ gates below are collected.
   `bdae10207994b18873241f8635360f0c8cf0c5ca333c0d24a25d0b1f668e80d0`;
   Turbo plan SHA-256
   `58e0ab247b8cee2c29fea58f2c287e5ae74f37a29abdf5942a5a585d66333ca6`.
+- [x] A live interrupted Base conversion journaled 67,108,864 payload bytes inside
+  the first transformer shard, then a new process revalidated the locked metadata,
+  source header, and retained digest and resumed at exact AIO output byte 69,571,112
+  (2,462,248-byte AIO header plus the journaled payload).
 - [x] Native LLaDA-Image tests plus the existing ComfyUI model-detection suite:
   60 passed locally on Core head
   `32429bd2296d92c79f94ceec21c69b39d3700401`. The two tiny-AIO parameter cases
