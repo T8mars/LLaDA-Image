@@ -243,13 +243,15 @@ gates below are collected.
   Execution Tests on Linux, macOS, and Windows, Ruff, Pylint, server launch, line
   endings, CLA, AI co-author, and security checks. See the
   [Core PR checks](https://github.com/Comfy-Org/ComfyUI/pull/16095/checks).
-- [ ] Full Base conversion was attempted on the current host after the remote
-  streaming path had validated the 1,439-tensor plan. The host's HF/Xet large-file
-  connection repeatedly terminated early, while the official `hf_xet` client
-  remained at zero bytes. Complete this gate from the pinned local source or a host
-  with stable Hugging Face large-object access; the converter now resumes individual
-  interrupted streams at their exact byte offset, journals/revalidates progress every
-  64 MiB across processes, and holds an exclusive output lock.
+- [ ] Full Base conversion is actively streaming the pinned revision on the current
+  host after validating the 1,439-tensor plan. At 2026-09-05 02:19 +08:00, the
+  4,270,676,320-byte first transformer shard completed, passed its locked source
+  SHA-256 verification, and was atomically recorded in `completed_files`; the same
+  process then advanced to `diffusion_pytorch_model-00002-of-00004.safetensors` with
+  a 4,273,126,184-byte AIO partial and an empty error log. Earlier cross-process and
+  in-process interruptions resumed at exact byte offsets. The converter continues
+  to journal and revalidate progress every 64 MiB while holding an exclusive output
+  lock; this item remains open until the final AIO and manifest are fully verified.
 - [ ] Full official BF16 checkpoint conversion and GPU parity evidence remain open
   completion gates; tiny-model and CPU test success are not substitutes for them.
 
