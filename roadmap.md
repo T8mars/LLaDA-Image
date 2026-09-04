@@ -166,6 +166,11 @@ Turbo:
 - [x] Positive/negative CFG tests: semantic features are positive-only; source
   latents are present in both branches.
 - [ ] End-to-end text, VQ, and editing tests for Base and Turbo.
+- [x] A complete tiny AIO for each Base/Turbo metadata variant loads through
+  `CheckpointLoaderSimple`, preserves every MODEL/CLIP tensor, and executes the
+  native text encoder, text-to-image diffusion forward, SigVQ pixel encoder, and
+  editing diffusion forward with finite outputs. Full official-weight VQ generation
+  and image-parity runs remain part of the unchecked gate above.
 - [x] 1024x1024, non-square, batch, dimension-validation, CPU construction, BF16
   execution, meta unload/assign-reload, and finite-output checks.
 - [ ] Full official low-VRAM offload/unload/reload and memory-peak evidence.
@@ -217,13 +222,18 @@ gates below are collected.
   `58e0ab247b8cee2c29fea58f2c287e5ae74f37a29abdf5942a5a585d66333ca6`.
 - [x] Native LLaDA-Image tests plus the existing ComfyUI model-detection suite:
   60 passed locally on Core head
-  `210bb5152e3cb8a13b451eddb54d67aaa0a32ca5`.
+  `96e8dc8e07f538a0a760734711e863a99433d766`. The two tiny-AIO parameter cases
+  exercise Base and Turbo loading plus native generation/editing forwards.
 - [x] Remote bounded-header validation confirms all 1,187 LLaDA-specific tensors in
   each pinned Base and Turbo source have exact native Core keys and shapes.
-- [x] All 15 Core pull-request checks passed on that head, including Unit Tests and
+- [x] All 15 Core pull-request checks passed on prior head
+  `210bb5152e3cb8a13b451eddb54d67aaa0a32ca5`, including Unit Tests and
   Execution Tests on Linux, macOS, and Windows, Ruff, Pylint, server launch, line
   endings, CLA, AI co-author, and security checks. See the
   [Core PR checks](https://github.com/Comfy-Org/ComfyUI/pull/16095/checks).
+- [ ] Core CI is rerunning for current head
+  `96e8dc8e07f538a0a760734711e863a99433d766`; do not carry the previous green
+  result forward until this run finishes.
 - [ ] Full Base conversion was attempted on the current host after the remote
   streaming path had validated the 1,439-tensor plan. The host's HF/Xet large-file
   connection repeatedly terminated early, while the official `hf_xet` client
