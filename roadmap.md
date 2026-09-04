@@ -66,7 +66,10 @@ Acceptance criteria:
 - [x] Remote converter can stream a pinned revision directly into the AIO output,
   avoiding a second approximately 46 GiB local source copy while hashing every
   locked source file; interrupted HTTP streams resume at the exact byte offset and
-  an exclusive output lock prevents concurrent partial-file races.
+  an exclusive output lock prevents concurrent partial-file races. After each
+  complete source file passes SHA-256, an atomic sidecar records that verified
+  boundary so a later process can retain completed files, truncate only the
+  interrupted file, and continue safely.
 - [x] Every source tensor is mapped exactly once; duplicate and unknown keys fail.
 - [x] Tensor shapes, dtypes, counts, hashes, and metadata are verified after write.
 - [ ] The output loads with `CheckpointLoaderSimple` with no missing or unexpected
@@ -210,7 +213,7 @@ gates below are collected.
 ## Current validation record
 
 - [x] Local/remote converter, committed-plan, and remote shape-verifier tests:
-  16 passed with 2 plan subtests.
+  17 passed with 2 plan subtests.
 - [x] Pinned AIO plans contain 1,439 tensors each. Base is exactly
   49,259,978,134 bytes with header SHA-256
   `fda03e53d7f046d906930ad16a2c7cab2e7cc5b32638a694b9db4272b49ca155`;
@@ -227,14 +230,11 @@ gates below are collected.
   exercise Base and Turbo loading plus all three native execution modes.
 - [x] Remote bounded-header validation confirms all 1,187 LLaDA-specific tensors in
   each pinned Base and Turbo source have exact native Core keys and shapes.
-- [x] All 15 Core pull-request checks passed on prior head
-  `210bb5152e3cb8a13b451eddb54d67aaa0a32ca5`, including Unit Tests and
+- [x] All 15 Core pull-request checks passed on current head
+  `32429bd2296d92c79f94ceec21c69b39d3700401`, including Unit Tests and
   Execution Tests on Linux, macOS, and Windows, Ruff, Pylint, server launch, line
   endings, CLA, AI co-author, and security checks. See the
   [Core PR checks](https://github.com/Comfy-Org/ComfyUI/pull/16095/checks).
-- [ ] Core CI is rerunning for current head
-  `32429bd2296d92c79f94ceec21c69b39d3700401`; do not carry the previous green
-  result forward until this run finishes.
 - [ ] Full Base conversion was attempted on the current host after the remote
   streaming path had validated the 1,439-tensor plan. The host's HF/Xet large-file
   connection repeatedly terminated early, while the official `hf_xet` client

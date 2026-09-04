@@ -455,6 +455,110 @@ def stream_weight_file(
         )
 
 
+def partial_state_path(output: Path) -> Path:
+    return output.with_name(f"{output.name}.partial.json")
+
+
+def write_partial_state(path: Path, state: dict) -> None:
+    temporary = path.with_name(f"{path.name}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(state, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def checkpoint_resume_state(
+    args: argparse.Namespace,
+    partial: Path,
+    state_path: Path,
+    prefix: bytes,
+    paths: list[str],
+    payload_sizes: dict[str, int],
+    source_lock_sha256: str,
+) -> tuple[dict, int, int]:
+    identity = {
+        "format_version": FORMAT_VERSION,
+        "variant": args.variant,
+        "source_repo": args.source_repo,
+        "source_revision": args.source_revision,
+        "source_lock_sha256": source_lock_sha256,
+        "prefix_sha256": hashlib.sha256(prefix).hexdigest(),
+    }
+    fresh_state = {**identity, "completed_files": []}
+    if not partial.exists() and not state_path.exists():
+        return fresh_state, 0, 0
+    if args.overwrite:
+        partial.unlink(missing_ok=True)
+        state_path.unlink(missing_ok=True)
+        return fresh_state, 0, 0
+    if not partial.exists() or not state_path.exists():
+        if partial.exists() and partial.stat().st_size <= len(prefix):
+            partial.unlink()
+            state_path.unlink(missing_ok=True)
+            return fresh_state, 0, 0
+        raise RuntimeError(
+            f"incomplete resume pair for {partial}; pass --overwrite to restart"
+        )
+
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid partial resume state: {state_path}") from exc
+    if not isinstance(state, dict):
+        raise TypeError(f"invalid partial resume state: {state_path}")
+    for key, expected in identity.items():
+        if state.get(key) != expected:
+            raise RuntimeError(
+                f"partial resume state mismatch for {key}; pass --overwrite to restart"
+            )
+    completed = state.get("completed_files")
+    if not isinstance(completed, list) or completed != paths[: len(completed)]:
+        raise RuntimeError(f"invalid completed-file prefix in {state_path}")
+
+    boundary = len(prefix) + sum(payload_sizes[path] for path in completed)
+    actual_size = partial.stat().st_size
+    if actual_size < boundary:
+        raise RuntimeError(
+            f"partial checkpoint is shorter than its verified boundary: "
+            f"{actual_size} < {boundary}"
+        )
+    next_payload_size = (
+        payload_sizes[paths[len(completed)]]
+        if len(completed) < len(paths)
+        else None
+    )
+    if next_payload_size is not None and actual_size > boundary + next_payload_size:
+        raise RuntimeError(
+            f"partial checkpoint exceeds its next recoverable boundary: "
+            f"{actual_size} > {boundary + next_payload_size}"
+        )
+    with partial.open("rb") as handle:
+        if handle.read(len(prefix)) != prefix:
+            raise RuntimeError(
+                "partial checkpoint header mismatch; pass --overwrite to restart"
+            )
+    return state, len(completed), boundary
+
+
+def update_digest_from_prefix(
+    handle: BinaryIO, digest: hashlib._Hash, size: int
+) -> None:
+    handle.seek(0)
+    remaining = size
+    while remaining:
+        data = handle.read(min(COPY_CHUNK_SIZE, remaining))
+        if not data:
+            raise EOFError("partial checkpoint ended before its verified boundary")
+        digest.update(data)
+        remaining -= len(data)
+
+
 def write_checkpoint(
     args: argparse.Namespace,
     tensors: list[TensorSource],
@@ -464,18 +568,51 @@ def write_checkpoint(
     header = padded_header(tensors, metadata)
     output_digest = hashlib.sha256()
     partial = args.output.with_name(f"{args.output.name}.partial")
+    state_path = partial_state_path(args.output)
     partial.parent.mkdir(parents=True, exist_ok=True)
     by_path = defaultdict(list)
     for tensor in tensors:
         if tensor.path is not None:
             by_path[tensor.path.as_posix()].append(tensor)
 
+    prefix = struct.pack("<Q", len(header)) + header
+    paths = list(by_path)
+    payload_sizes = {
+        path: sum(tensor.size for tensor in path_tensors)
+        for path, path_tensors in by_path.items()
+    }
+    state, completed_count, resume_boundary = checkpoint_resume_state(
+        args,
+        partial,
+        state_path,
+        prefix,
+        paths,
+        payload_sizes,
+        metadata["llada_image.source_lock_sha256"],
+    )
+
     try:
-        with partial.open("wb") as target:
-            prefix = struct.pack("<Q", len(header)) + header
-            target.write(prefix)
-            output_digest.update(prefix)
-            for path, path_tensors in by_path.items():
+        mode = "r+b" if resume_boundary else "w+b"
+        with partial.open(mode) as target:
+            if resume_boundary:
+                update_digest_from_prefix(target, output_digest, resume_boundary)
+                target.seek(resume_boundary)
+                target.truncate()
+                print(
+                    f"Resuming AIO after {completed_count}/{len(paths)} verified "
+                    f"source files at output byte {resume_boundary}",
+                    flush=True,
+                )
+            else:
+                target.seek(0)
+                target.truncate()
+                target.write(prefix)
+                target.flush()
+                os.fsync(target.fileno())
+                write_partial_state(state_path, state)
+                output_digest.update(prefix)
+            for path in paths[completed_count:]:
+                path_tensors = by_path[path]
                 entry = weight_entries[path]
                 data_start = path_tensors[0].offset
                 print(f"Streaming {path} ({entry['size']} bytes)", flush=True)
@@ -487,6 +624,10 @@ def write_checkpoint(
                     target,
                     output_digest,
                 )
+                target.flush()
+                os.fsync(target.fileno())
+                state["completed_files"].append(path)
+                write_partial_state(state_path, state)
 
             tokenizer = tensors[-1]
             if tokenizer.key != TOKENIZER_KEY or tokenizer.data is None:
@@ -494,9 +635,14 @@ def write_checkpoint(
             target.write(tokenizer.data)
             output_digest.update(tokenizer.data)
         os.replace(partial, args.output)
+        state_path.unlink(missing_ok=True)
     except BaseException:
         if partial.exists():
-            partial.unlink()
+            print(
+                f"Kept resumable partial checkpoint {partial} and state "
+                f"{state_path}",
+                flush=True,
+            )
         raise
     return output_digest.hexdigest()
 

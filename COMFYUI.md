@@ -48,7 +48,12 @@ output, stream the pinned revision directly. This path needs space only for the
 approximately 46 GiB output, reads each weight file sequentially, verifies every
 locked source-file SHA-256 while streaming, resumes prematurely closed streams from
 the exact byte offset, takes an exclusive output lock, and performs the same atomic
-write and post-write verification:
+write and post-write verification. It also commits an atomic
+`<checkpoint>.partial.json` journal after each complete source file passes SHA-256.
+If the process stops, rerunning the same command verifies the source/header identity,
+keeps those completed file boundaries, truncates only the interrupted source file,
+and continues. Pass `--overwrite` only when intentionally discarding an incompatible
+partial run:
 
 ```bash
 python scripts/convert_comfyui_aio_remote.py \

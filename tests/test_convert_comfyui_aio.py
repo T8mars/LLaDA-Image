@@ -305,6 +305,80 @@ class ConvertComfyUIAIOTests(unittest.TestCase):
                     checkpoint.seek(data_start + start)
                     self.assertEqual(checkpoint.read(end - start), value, key)
 
+    def test_remote_conversion_resumes_at_verified_file_boundary(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "source"
+            root.mkdir()
+            expected = self.make_source(root)
+            output = Path(temporary_directory) / "remote-resume.safetensors"
+            args = self.args(root, output)
+            args.retries = 1
+            remote_files = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in root.rglob("*")
+                if path.is_file()
+            }
+
+            def fake_read(url, byte_range=None):
+                path = urllib.parse.unquote(
+                    url.split(f"/{args.source_revision}/", 1)[1]
+                )
+                data = remote_files[path]
+                if byte_range is None:
+                    return data
+                return data[byte_range[0] : byte_range[1] + 1]
+
+            failed_path = "text_encoder/model.safetensors"
+            first_calls = []
+
+            def failing_open(_args, path, start, _size):
+                first_calls.append(path)
+                if path == failed_path:
+                    raise OSError("simulated connection loss")
+                return io.BytesIO(remote_files[path][start:])
+
+            with (
+                patch.object(remote_converter, "read_url", side_effect=fake_read),
+                patch.object(
+                    remote_converter, "open_remote", side_effect=failing_open
+                ),
+                self.assertRaisesRegex(RuntimeError, "failed after 1"),
+            ):
+                remote_converter.convert(args)
+
+            partial = output.with_name(f"{output.name}.partial")
+            state_path = remote_converter.partial_state_path(output)
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertTrue(partial.exists())
+            self.assertEqual(
+                state["completed_files"], ["transformer/model.safetensors"]
+            )
+            self.assertIn("transformer/model.safetensors", first_calls)
+
+            resumed_calls = []
+
+            def resumed_open(_args, path, start, _size):
+                resumed_calls.append(path)
+                return io.BytesIO(remote_files[path][start:])
+
+            with (
+                patch.object(remote_converter, "read_url", side_effect=fake_read),
+                patch.object(
+                    remote_converter, "open_remote", side_effect=resumed_open
+                ),
+            ):
+                remote_converter.convert(args)
+
+            self.assertNotIn("transformer/model.safetensors", resumed_calls)
+            self.assertFalse(partial.exists())
+            self.assertFalse(state_path.exists())
+            header, data_start = converter.read_safetensors_header(output)
+            with output.open("rb") as checkpoint:
+                for key, value in expected.items():
+                    start, end = header[key]["data_offsets"]
+                    checkpoint.seek(data_start + start)
+                    self.assertEqual(checkpoint.read(end - start), value, key)
+
     def test_remote_output_lock_rejects_concurrent_conversion(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory) / "locked.safetensors"
