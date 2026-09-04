@@ -184,6 +184,19 @@ gates below are collected.
 - [ ] Address review feedback without replacing the verified reference behavior with
   approximations.
 
+## Current validation record
+
+- [x] Converter unit tests: 7 passed on commit
+  `6908a202322708246b39e6b35de536981635e97c`.
+- [x] Native LLaDA-Image tests plus the existing ComfyUI model-detection suite:
+  40 passed locally on Core head `2679649268e741d79246908d68b588f0c4f23aaf`.
+- [x] All 15 Core pull-request checks passed on that head, including Unit Tests and
+  Execution Tests on Linux, macOS, and Windows, Ruff, Pylint, server launch, line
+  endings, CLA, AI co-author, and security checks. See the
+  [Core PR checks](https://github.com/Comfy-Org/ComfyUI/pull/16095/checks).
+- [ ] Full official BF16 checkpoint conversion and GPU parity evidence remain open
+  completion gates; tiny-model and CPU test success are not substitutes for them.
+
 ## Completion gate
 
 This roadmap is complete only when both BF16 variants load from one AIO file through
