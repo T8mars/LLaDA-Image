@@ -1,5 +1,7 @@
 <h1 align="center">LLaDA-Image: Building Strong Image Generators with Fully Open Training Recipes</h1>
 
+> Native ComfyUI Core packaging and integration notes: [`COMFYUI.md`](COMFYUI.md).
+
 <p align="center">
   Welcome to the official repository for LLaDA-Image, a unified model for high-quality image generation and editing.
 </p>
