@@ -6,6 +6,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import urllib.error
 import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
@@ -160,6 +161,13 @@ class ConvertComfyUIAIOTests(unittest.TestCase):
                 hashlib.sha256(output.read_bytes()).hexdigest(),
             )
             self.assertTrue(all(source["sha256"] for source in manifest["sources"]))
+            source_lock = json.loads(
+                self.args(root, output).source_lock.read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                metadata["llada_image.source_lock_sha256"],
+                converter.canonical_json_sha256(source_lock),
+            )
 
     def test_variant_mismatch_fails_before_writing(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -308,6 +316,85 @@ class ConvertComfyUIAIOTests(unittest.TestCase):
             ):
                 self.fail("second lock unexpectedly succeeded")
 
+    def test_remote_metadata_retries_rate_limit(self):
+        args = argparse.Namespace(
+            source_repo="owner/model", source_revision="revision", retries=2
+        )
+        rate_limit = urllib.error.HTTPError(
+            "https://example.invalid",
+            429,
+            "Too Many Requests",
+            {"Retry-After": "0"},
+            None,
+        )
+        with (
+            patch.object(
+                remote_converter, "read_url", side_effect=(rate_limit, b"ok")
+            ) as read,
+            patch.object(remote_converter.time, "sleep") as sleep,
+        ):
+            actual = remote_converter.read_remote_bytes(args, "config.json")
+
+        self.assertEqual(actual, b"ok")
+        self.assertEqual(read.call_count, 2)
+        sleep.assert_called_once_with(1)
+
+    def test_remote_metadata_hash_mismatch_fails(self):
+        entry = {
+            "path": "config.json",
+            "size": 2,
+            "sha256": hashlib.sha256(b"ok").hexdigest(),
+        }
+
+        with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+            remote_converter.verify_bytes(entry, b"no")
+
+    def test_remote_plan_is_complete_without_streaming_payloads(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "source"
+            root.mkdir()
+            expected = self.make_source(root)
+            output = Path(temporary_directory) / "planned.safetensors"
+            plan_output = Path(temporary_directory) / "planned.json"
+            args = self.args(root, output)
+            args.plan_only = True
+            args.plan_output = plan_output
+            remote_files = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in root.rglob("*")
+                if path.is_file()
+            }
+
+            def fake_read(url, byte_range=None):
+                path = urllib.parse.unquote(
+                    url.split(f"/{args.source_revision}/", 1)[1]
+                )
+                data = remote_files[path]
+                if byte_range is None:
+                    return data
+                return data[byte_range[0] : byte_range[1] + 1]
+
+            with (
+                patch.object(remote_converter, "read_url", side_effect=fake_read),
+                patch.object(
+                    remote_converter,
+                    "open_remote",
+                    side_effect=AssertionError("plan streamed tensor payloads"),
+                ),
+            ):
+                remote_converter.convert(args)
+
+            plan = json.loads(plan_output.read_text(encoding="utf-8"))
+            self.assertEqual(plan["tensor_count"], len(expected))
+            self.assertEqual(
+                plan["output_size"],
+                plan["output_header_size"] + plan["output_tensor_data_size"],
+            )
+            self.assertEqual(
+                {tensor["key"] for tensor in plan["tensors"]}, set(expected)
+            )
+            self.assertFalse(output.exists())
+
 
 class ShapeContractVerifierTests(unittest.TestCase):
     def test_remote_url_pins_and_escapes_revision_and_path(self):
@@ -377,6 +464,61 @@ class ShapeContractVerifierTests(unittest.TestCase):
                 "text_encoders.queryformer.meta_queries": (5, 16),
             },
         )
+
+
+class CommittedAIOPlanTests(unittest.TestCase):
+    def test_base_and_turbo_plans_have_complete_contiguous_layouts(self):
+        expected = {
+            "base": (
+                "inclusionAI/LLaDA-Image",
+                "e4e2703f410f7ddb6ee8d6b09dac6a8ec5093039",
+                49_259_978_134,
+            ),
+            "turbo": (
+                "inclusionAI/LLaDA-Image-Turbo",
+                "f4afc52d925bbac4e22a1c947111fc1f127e37e5",
+                49_259_978_182,
+            ),
+        }
+        for variant, (repo, revision, output_size) in expected.items():
+            with self.subTest(variant=variant):
+                plan = json.loads(
+                    (
+                        REPOSITORY_ROOT
+                        / "manifests"
+                        / f"llada-image-{variant}.aio-plan.json"
+                    ).read_text(encoding="utf-8")
+                )
+                source_lock = json.loads(
+                    (
+                        REPOSITORY_ROOT
+                        / "manifests"
+                        / f"llada-image-{variant}.source.json"
+                    ).read_text(encoding="utf-8")
+                )
+                self.assertEqual(plan["source_repo"], repo)
+                self.assertEqual(plan["source_revision"], revision)
+                self.assertEqual(
+                    plan["source_lock_sha256"],
+                    converter.canonical_json_sha256(source_lock),
+                )
+                self.assertEqual(plan["tensor_count"], 1439)
+                self.assertEqual(len(plan["tensors"]), 1439)
+                self.assertEqual(len({item["key"] for item in plan["tensors"]}), 1439)
+                cursor = 0
+                for tensor in plan["tensors"]:
+                    self.assertEqual(tensor["output_data_offsets"][0], cursor)
+                    cursor = tensor["output_data_offsets"][1]
+                    self.assertEqual(cursor, tensor["output_data_offsets"][0] + tensor["size"])
+                self.assertEqual(cursor, plan["output_tensor_data_size"])
+                self.assertEqual(
+                    plan["output_size"], plan["output_header_size"] + cursor
+                )
+                self.assertEqual(plan["output_size"], output_size)
+                self.assertEqual(
+                    sum(plan["component_tensor_counts"].values()), 1439
+                )
+                self.assertEqual(len(plan["aio_header_sha256"]), 64)
 
 
 if __name__ == "__main__":

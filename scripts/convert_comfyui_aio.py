@@ -367,6 +367,16 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def canonical_json_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def build_manifest(
     output: Path,
     tensors: list[TensorSource],
@@ -498,7 +508,7 @@ def verify_source_lock(
                 f"{path}: SHA-256 mismatch; expected {entry['sha256']}, got {digest}"
             )
         verified.append({"path": name, "size": size, "sha256": digest})
-    return verified, sha256_file(lock_path)
+    return verified, canonical_json_sha256(lock)
 
 
 def convert(args: argparse.Namespace) -> None:

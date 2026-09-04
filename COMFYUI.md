@@ -61,6 +61,22 @@ python scripts/convert_comfyui_aio_remote.py \
 For Turbo, substitute its repository, pinned revision, output filename, and
 `--variant turbo` as above.
 
+Generate the complete deterministic layout without downloading tensor payloads:
+
+```bash
+python scripts/convert_comfyui_aio_remote.py \
+  LLaDA-Image-Base-BF16-AIO.safetensors \
+  --variant base \
+  --source-repo inclusionAI/LLaDA-Image \
+  --source-revision e4e2703f410f7ddb6ee8d6b09dac6a8ec5093039 \
+  --plan-only \
+  --plan-output manifests/llada-image-base.aio-plan.json
+```
+
+The committed Base and Turbo plans enumerate every source and output offset. Their
+exact AIO sizes are 49,259,978,134 and 49,259,978,182 bytes respectively; each plan
+also fixes the canonical source-lock hash and serialized AIO-header SHA-256.
+
 ## Verify the native shape contract without downloading the weights
 
 The companion verifier reads only the bounded safetensors headers from the pinned

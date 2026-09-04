@@ -9,6 +9,8 @@ import json
 import math
 import os
 import struct
+import time
+import urllib.error
 import urllib.request
 from collections import defaultdict
 from contextlib import contextmanager
@@ -24,16 +26,17 @@ from convert_comfyui_aio import (
     TOKENIZER_KEY,
     TensorSource,
     build_manifest,
+    canonical_json_sha256,
     is_known_component_key,
     make_metadata,
     padded_header,
-    sha256_file,
     validate_variant,
     verify_checkpoint,
 )
 from verify_comfyui_shape_contract import read_url, remote_url
 
 MAX_METADATA_FILE_SIZE = 64 * 1024 * 1024
+RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 
 
 @contextmanager
@@ -72,7 +75,7 @@ def output_lock(output: Path):
         handle.close()
 
 
-def read_lock(args: argparse.Namespace) -> tuple[Path, list[dict]]:
+def read_lock(args: argparse.Namespace) -> tuple[dict, list[dict]]:
     lock_path = args.source_lock
     if lock_path is None:
         lock_path = (
@@ -118,7 +121,7 @@ def read_lock(args: argparse.Namespace) -> tuple[Path, list[dict]]:
         if path in seen:
             raise ValueError(f"{lock_path}: duplicate file entry {path!r}")
         seen.add(path)
-    return lock_path, sorted(entries, key=lambda entry: entry["path"])
+    return lock, sorted(entries, key=lambda entry: entry["path"])
 
 
 def verify_bytes(entry: dict, data: bytes) -> None:
@@ -133,6 +136,40 @@ def verify_bytes(entry: dict, data: bytes) -> None:
         )
 
 
+def read_remote_bytes(
+    args: argparse.Namespace,
+    path: str,
+    byte_range: tuple[int, int] | None = None,
+) -> bytes:
+    url = remote_url(args.source_repo, args.source_revision, path)
+    retries = getattr(args, "retries", 20)
+    error = None
+    for attempt in range(1, retries + 1):
+        try:
+            return read_url(url, byte_range)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in RETRYABLE_HTTP_CODES:
+                raise
+            error = exc
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            delay = int(retry_after) if retry_after and retry_after.isdigit() else 0
+        except (OSError, RuntimeError, urllib.error.URLError) as exc:
+            error = exc
+            delay = 0
+        if attempt == retries:
+            break
+        delay = max(delay, min(2 ** (attempt - 1), 30))
+        print(
+            f"Retrying {path} metadata/header request after attempt "
+            f"{attempt}/{retries} in {delay}s: {error}",
+            flush=True,
+        )
+        time.sleep(delay)
+    raise RuntimeError(
+        f"{path}: metadata/header request failed after {retries} attempts"
+    ) from error
+
+
 def download_metadata_files(
     args: argparse.Namespace, entries: list[dict]
 ) -> dict[str, bytes]:
@@ -144,9 +181,7 @@ def download_metadata_files(
             raise ValueError(
                 f"{entry['path']}: non-weight file exceeds {MAX_METADATA_FILE_SIZE} bytes"
             )
-        data = read_url(
-            remote_url(args.source_repo, args.source_revision, entry["path"])
-        )
+        data = read_remote_bytes(args, entry["path"])
         verify_bytes(entry, data)
         files[entry["path"]] = data
     return files
@@ -184,8 +219,7 @@ def build_config(files: dict[str, bytes], variant: str) -> dict:
 def read_remote_header(
     args: argparse.Namespace, entry: dict
 ) -> tuple[dict, int]:
-    url = remote_url(args.source_repo, args.source_revision, entry["path"])
-    length_data = read_url(url, (0, 7))
+    length_data = read_remote_bytes(args, entry["path"], (0, 7))
     if len(length_data) != 8:
         raise ValueError(f"{entry['path']}: truncated safetensors length")
     header_length = struct.unpack("<Q", length_data)[0]
@@ -193,7 +227,9 @@ def read_remote_header(
         raise ValueError(
             f"{entry['path']}: invalid safetensors header length {header_length}"
         )
-    header_data = read_url(url, (8, 7 + header_length))
+    header_data = read_remote_bytes(
+        args, entry["path"], (8, 7 + header_length)
+    )
     if len(header_data) != header_length:
         raise ValueError(f"{entry['path']}: truncated safetensors header")
     try:
@@ -465,17 +501,94 @@ def write_checkpoint(
     return output_digest.hexdigest()
 
 
+def build_plan(
+    args: argparse.Namespace,
+    tensors: list[TensorSource],
+    metadata: dict[str, str],
+) -> dict:
+    header = padded_header(tensors, metadata)
+    prefix = struct.pack("<Q", len(header)) + header
+    offset = 0
+    tensor_entries = []
+    for tensor in tensors:
+        tensor_entries.append(
+            {
+                "key": tensor.key,
+                "dtype": tensor.dtype,
+                "shape": tensor.shape,
+                "size": tensor.size,
+                "output_data_offsets": [offset, offset + tensor.size],
+                "source_file": tensor.path.as_posix() if tensor.path else None,
+                "source_offset": tensor.offset if tensor.path else None,
+            }
+        )
+        offset += tensor.size
+    component_counts = {
+        component: sum(tensor.key.startswith(prefix) for tensor in tensors)
+        for component, prefix in COMPONENT_PREFIXES
+    }
+    component_counts["tokenizer"] = sum(
+        tensor.key == TOKENIZER_KEY for tensor in tensors
+    )
+    return {
+        "format_version": FORMAT_VERSION,
+        "variant": args.variant,
+        "source_repo": args.source_repo,
+        "source_revision": args.source_revision,
+        "source_lock_sha256": metadata["llada_image.source_lock_sha256"],
+        "output": args.output.name,
+        "output_header_size": len(prefix),
+        "output_tensor_data_size": offset,
+        "output_size": len(prefix) + offset,
+        "aio_header_sha256": hashlib.sha256(prefix).hexdigest(),
+        "tensor_count": len(tensors),
+        "component_tensor_counts": component_counts,
+        "tensors": tensor_entries,
+    }
+
+
+def write_plan(path: Path, plan: dict, overwrite: bool) -> None:
+    if path.exists() and not overwrite:
+        raise FileExistsError(
+            f"plan already exists: {path}; pass --overwrite to replace it"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f"{path.name}.partial")
+    try:
+        with partial.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(plan, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+        os.replace(partial, path)
+    except BaseException:
+        if partial.exists():
+            partial.unlink()
+        raise
+
+
 def convert_locked(args: argparse.Namespace) -> None:
-    if args.output.exists() and not args.overwrite:
+    plan_only = getattr(args, "plan_only", False)
+    if not plan_only and args.output.exists() and not args.overwrite:
         raise FileExistsError(
             f"output already exists: {args.output}; pass --overwrite to replace it"
         )
-    lock_path, entries = read_lock(args)
+    lock, entries = read_lock(args)
     metadata_files = download_metadata_files(args, entries)
     config = build_config(metadata_files, args.variant)
     validate_variant(config, args.variant)
     tensors, weight_entries = collect_tensors(args, entries, metadata_files)
-    metadata = make_metadata(config, args, sha256_file(lock_path), tensors)
+    metadata = make_metadata(config, args, canonical_json_sha256(lock), tensors)
+
+    if plan_only:
+        plan_path = getattr(args, "plan_output", None)
+        if plan_path is None:
+            plan_path = args.output.with_suffix(f"{args.output.suffix}.plan.json")
+        plan = build_plan(args, tensors, metadata)
+        write_plan(plan_path.resolve(), plan, args.overwrite)
+        print(
+            f"Planned {plan['tensor_count']} tensors and {plan['output_size']} "
+            f"output bytes in {plan_path.resolve()}"
+        )
+        return
 
     print(f"Packing {len(tensors)} tensors into {args.output}")
     output_sha256 = write_checkpoint(
@@ -510,6 +623,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--source-lock", type=Path)
     parser.add_argument("--retries", type=int, default=20)
+    parser.add_argument("--plan-only", action="store_true")
+    parser.add_argument("--plan-output", type=Path)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     if args.retries < 1:

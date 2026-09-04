@@ -71,7 +71,11 @@ Acceptance criteria:
 - [x] Tensor shapes, dtypes, counts, hashes, and metadata are verified after write.
 - [ ] The output loads with `CheckpointLoaderSimple` with no missing or unexpected
   model keys.
-- [ ] Separate Base and Turbo conversion manifests are reproducible.
+- [x] Separate deterministic Base and Turbo AIO layout plans enumerate all 1,439
+  tensors, source/output offsets, shapes, dtypes, exact output sizes, canonical
+  source-lock hashes, and serialized header hashes.
+- [ ] Final Base and Turbo conversion manifests containing the complete output
+  payload SHA-256 are reproducible after both full writes.
 
 ## Native runtime architecture
 
@@ -187,6 +191,11 @@ gates below are collected.
 - [x] Publish conversion tooling and pinned manifests separately from Core source.
 - [ ] Publish converted checkpoints separately from Core source if requested by
   maintainers.
+- [x] Confirm the official template destination and validation contract from
+  [`Comfy-Org/workflow_templates`](https://github.com/Comfy-Org/workflow_templates):
+  native exported workflow JSON, real output thumbnail, bundle/index entry, and
+  loader metadata containing the exact hosted filename, direct URL, SHA-256, and
+  `checkpoints` directory. Do not publish placeholder model metadata.
 - [ ] Add official workflow templates/model download metadata in the appropriate
   ComfyUI repository after Core support is accepted.
 - [ ] Address review feedback without replacing the verified reference behavior with
@@ -194,7 +203,18 @@ gates below are collected.
 
 ## Current validation record
 
-- [x] Local/remote converter and remote shape-verifier unit tests: 12 passed.
+- [x] Local/remote converter, committed-plan, and remote shape-verifier tests:
+  16 passed with 2 plan subtests.
+- [x] Pinned AIO plans contain 1,439 tensors each. Base is exactly
+  49,259,978,134 bytes with header SHA-256
+  `fda03e53d7f046d906930ad16a2c7cab2e7cc5b32638a694b9db4272b49ca155`;
+  Turbo is exactly 49,259,978,182 bytes with header SHA-256
+  `429659f338bc277a6f34ffb4bb7c02f21bc78f9a43a644ac9b277fbc14150d36`.
+- [x] Both plans were regenerated from their pinned remote revisions and were
+  byte-identical to the first run: Base plan SHA-256
+  `bdae10207994b18873241f8635360f0c8cf0c5ca333c0d24a25d0b1f668e80d0`;
+  Turbo plan SHA-256
+  `58e0ab247b8cee2c29fea58f2c287e5ae74f37a29abdf5942a5a585d66333ca6`.
 - [x] Native LLaDA-Image tests plus the existing ComfyUI model-detection suite:
   60 passed locally on Core head
   `210bb5152e3cb8a13b451eddb54d67aaa0a32ca5`.
