@@ -223,7 +223,7 @@ gates below are collected.
   `58e0ab247b8cee2c29fea58f2c287e5ae74f37a29abdf5942a5a585d66333ca6`.
 - [x] Native LLaDA-Image tests plus the existing ComfyUI model-detection suite:
   60 passed locally on Core head
-  `81698bb0222731a5aa11222fa2a85a6b5800b18e`. The two tiny-AIO parameter cases
+  `32429bd2296d92c79f94ceec21c69b39d3700401`. The two tiny-AIO parameter cases
   exercise Base and Turbo loading plus all three native execution modes.
 - [x] Remote bounded-header validation confirms all 1,187 LLaDA-specific tensors in
   each pinned Base and Turbo source have exact native Core keys and shapes.
@@ -233,7 +233,7 @@ gates below are collected.
   endings, CLA, AI co-author, and security checks. See the
   [Core PR checks](https://github.com/Comfy-Org/ComfyUI/pull/16095/checks).
 - [ ] Core CI is rerunning for current head
-  `81698bb0222731a5aa11222fa2a85a6b5800b18e`; do not carry the previous green
+  `32429bd2296d92c79f94ceec21c69b39d3700401`; do not carry the previous green
   result forward until this run finishes.
 - [ ] Full Base conversion was attempted on the current host after the remote
   streaming path had validated the 1,439-tensor plan. The host's HF/Xet large-file
