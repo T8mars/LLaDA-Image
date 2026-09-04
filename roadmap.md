@@ -192,10 +192,10 @@ gates below are collected.
   `210bb5152e3cb8a13b451eddb54d67aaa0a32ca5`.
 - [x] Remote bounded-header validation confirms all 1,187 LLaDA-specific tensors in
   each pinned Base and Turbo source have exact native Core keys and shapes.
-- [x] All 15 Core pull-request checks passed on the prior reviewed head, including Unit Tests and
+- [x] All 15 Core pull-request checks passed on that head, including Unit Tests and
   Execution Tests on Linux, macOS, and Windows, Ruff, Pylint, server launch, line
-  endings, CLA, AI co-author, and security checks. The current head is tracked at
-  the [Core PR checks](https://github.com/Comfy-Org/ComfyUI/pull/16095/checks).
+  endings, CLA, AI co-author, and security checks. See the
+  [Core PR checks](https://github.com/Comfy-Org/ComfyUI/pull/16095/checks).
 - [ ] Full official BF16 checkpoint conversion and GPU parity evidence remain open
   completion gates; tiny-model and CPU test success are not substitutes for them.
 
