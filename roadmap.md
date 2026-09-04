@@ -229,27 +229,27 @@ gates below are collected.
 - [x] A live interrupted Base conversion journaled 67,108,864 payload bytes inside
   the first transformer shard, then a new process revalidated the locked metadata,
   source header, and retained digest and resumed at exact AIO output byte 69,571,112
-  (2,462,248-byte AIO header plus the journaled payload).
+  (2,462,248-byte AIO header plus the journaled payload). A later remote EOF at
+  exact source byte 379,799,878 resumed in-process from that byte; the durable
+  journal then continued advancing without an error log.
 - [x] Native LLaDA-Image tests plus the existing ComfyUI model-detection suite:
   60 passed locally on Core head
   `1b54798c9fa971bb99858e0e502cc05af4a9fb98`. The two tiny-AIO parameter cases
   exercise Base and Turbo loading plus all three native execution modes.
 - [x] Remote bounded-header validation confirms all 1,187 LLaDA-specific tensors in
   each pinned Base and Turbo source have exact native Core keys and shapes.
-- [x] All 15 Core pull-request checks passed on prior head
-  `32429bd2296d92c79f94ceec21c69b39d3700401`, including Unit Tests and
+- [x] All 15 Core pull-request checks passed on current head
+  `1b54798c9fa971bb99858e0e502cc05af4a9fb98`, including Unit Tests and
   Execution Tests on Linux, macOS, and Windows, Ruff, Pylint, server launch, line
   endings, CLA, AI co-author, and security checks. See the
   [Core PR checks](https://github.com/Comfy-Org/ComfyUI/pull/16095/checks).
-- [ ] Core CI is rerunning for current head
-  `1b54798c9fa971bb99858e0e502cc05af4a9fb98`; do not carry the prior green result
-  forward until this run finishes.
 - [ ] Full Base conversion was attempted on the current host after the remote
   streaming path had validated the 1,439-tensor plan. The host's HF/Xet large-file
   connection repeatedly terminated early, while the official `hf_xet` client
   remained at zero bytes. Complete this gate from the pinned local source or a host
   with stable Hugging Face large-object access; the converter now resumes individual
-  interrupted streams at their exact byte offset and holds an exclusive output lock.
+  interrupted streams at their exact byte offset, journals/revalidates progress every
+  64 MiB across processes, and holds an exclusive output lock.
 - [ ] Full official BF16 checkpoint conversion and GPU parity evidence remain open
   completion gates; tiny-model and CPU test success are not substitutes for them.
 
