@@ -166,13 +166,16 @@ Turbo:
 
 Design proposal and maintainer questions were posted on the existing Core feature
 issue: <https://github.com/Comfy-Org/ComfyUI/issues/16088#issuecomment-5540384427>.
+The native implementation is submitted as draft Core PR
+<https://github.com/Comfy-Org/ComfyUI/pull/16095> while the remaining completion
+gates below are collected.
 
 - [x] Open a ComfyUI design/feature issue before the large implementation PR. Include
   the component map, AIO contract, node graph, sampling exception, licensing, model
   size, and parity strategy.
 - [x] Request maintainer confirmation for AIO packaging, SigVQ ownership under CLIP,
   and the dedicated Turbo sampler.
-- [ ] Keep the Core PR focused on native runtime, detection, minimal nodes, tests,
+- [x] Keep the Core PR focused on native runtime, detection, minimal nodes, tests,
   and attribution.
 - [ ] Publish conversion tooling/manifests and converted checkpoints separately from
   Core source if requested by maintainers.
