@@ -49,11 +49,12 @@ approximately 46 GiB output, reads each weight file sequentially, verifies every
 locked source-file SHA-256 while streaming, resumes prematurely closed streams from
 the exact byte offset, takes an exclusive output lock, and performs the same atomic
 write and post-write verification. It also commits an atomic
-`<checkpoint>.partial.json` journal after each complete source file passes SHA-256.
-If the process stops, rerunning the same command verifies the source/header identity,
-keeps those completed file boundaries, truncates only the interrupted source file,
-and continues. Pass `--overwrite` only when intentionally discarding an incompatible
-partial run:
+`<checkpoint>.partial.json` journal every 64 MiB and after each complete source file.
+The journal binds the source revision, source-lock hash, AIO header hash, current
+source cursor, and the SHA-256 of the source header plus retained payload. If the
+process stops, rerunning the same command recomputes that digest from the local
+partial file before issuing an exact Range continuation. Pass `--overwrite` only
+when intentionally discarding an incompatible partial run:
 
 ```bash
 python scripts/convert_comfyui_aio_remote.py \

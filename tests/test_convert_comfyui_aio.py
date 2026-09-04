@@ -379,6 +379,90 @@ class ConvertComfyUIAIOTests(unittest.TestCase):
                     checkpoint.seek(data_start + start)
                     self.assertEqual(checkpoint.read(end - start), value, key)
 
+    def test_remote_conversion_resumes_inside_source_file(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "source"
+            root.mkdir()
+            expected = self.make_source(root)
+            output = Path(temporary_directory) / "remote-range-resume.safetensors"
+            args = self.args(root, output)
+            args.retries = 1
+            remote_files = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in root.rglob("*")
+                if path.is_file()
+            }
+
+            def fake_read(url, byte_range=None):
+                path = urllib.parse.unquote(
+                    url.split(f"/{args.source_revision}/", 1)[1]
+                )
+                data = remote_files[path]
+                if byte_range is None:
+                    return data
+                return data[byte_range[0] : byte_range[1] + 1]
+
+            transformer_path = "transformer/model.safetensors"
+
+            class InterruptedSource(io.BytesIO):
+                def __init__(self, data):
+                    super().__init__(data)
+                    self.first_read = True
+
+                def read(self, size=-1):
+                    if self.first_read:
+                        self.first_read = False
+                        return super().read(min(size, 2))
+                    raise OSError("simulated process-ending stream failure")
+
+            def interrupted_open(_args, path, start, _size):
+                if path == transformer_path:
+                    return InterruptedSource(remote_files[path][start:])
+                return io.BytesIO(remote_files[path][start:])
+
+            with (
+                patch.object(remote_converter, "read_url", side_effect=fake_read),
+                patch.object(
+                    remote_converter, "open_remote", side_effect=interrupted_open
+                ),
+                patch.object(remote_converter, "PARTIAL_CHECKPOINT_INTERVAL", 1),
+                self.assertRaisesRegex(RuntimeError, "failed after 1"),
+            ):
+                remote_converter.convert(args)
+
+            state_path = remote_converter.partial_state_path(output)
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(state["current_file"], transformer_path)
+            self.assertEqual(state["current_payload_bytes"], 2)
+
+            resumed_calls = []
+
+            def resumed_open(_args, path, start, _size):
+                resumed_calls.append((path, start))
+                return io.BytesIO(remote_files[path][start:])
+
+            transformer_data_start = len(remote_files[transformer_path]) - len(
+                expected["model.diffusion_model.x_pad_token"]
+            )
+            with (
+                patch.object(remote_converter, "read_url", side_effect=fake_read),
+                patch.object(
+                    remote_converter, "open_remote", side_effect=resumed_open
+                ),
+            ):
+                remote_converter.convert(args)
+
+            self.assertIn(
+                (transformer_path, transformer_data_start + 2), resumed_calls
+            )
+            self.assertFalse(state_path.exists())
+            header, data_start = converter.read_safetensors_header(output)
+            with output.open("rb") as checkpoint:
+                for key, value in expected.items():
+                    start, end = header[key]["data_offsets"]
+                    checkpoint.seek(data_start + start)
+                    self.assertEqual(checkpoint.read(end - start), value, key)
+
     def test_remote_output_lock_rejects_concurrent_conversion(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory) / "locked.safetensors"

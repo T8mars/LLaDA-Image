@@ -67,9 +67,11 @@ Acceptance criteria:
   avoiding a second approximately 46 GiB local source copy while hashing every
   locked source file; interrupted HTTP streams resume at the exact byte offset and
   an exclusive output lock prevents concurrent partial-file races. After each
-  complete source file passes SHA-256, an atomic sidecar records that verified
-  boundary so a later process can retain completed files, truncate only the
-  interrupted file, and continue safely.
+  64 MiB and complete-source-file boundary, an atomic sidecar records the exact
+  source cursor and digest state. A later process rehashes the retained local bytes,
+  rejects identity/digest mismatches, truncates any unjournaled tail, and continues
+  with an exact Range request; the complete official source SHA-256 still gates each
+  finished file.
 - [x] Every source tensor is mapped exactly once; duplicate and unknown keys fail.
 - [x] Tensor shapes, dtypes, counts, hashes, and metadata are verified after write.
 - [ ] The output loads with `CheckpointLoaderSimple` with no missing or unexpected
@@ -213,7 +215,7 @@ gates below are collected.
 ## Current validation record
 
 - [x] Local/remote converter, committed-plan, and remote shape-verifier tests:
-  17 passed with 2 plan subtests.
+  18 passed with 2 plan subtests.
 - [x] Pinned AIO plans contain 1,439 tensors each. Base is exactly
   49,259,978,134 bytes with header SHA-256
   `fda03e53d7f046d906930ad16a2c7cab2e7cc5b32638a694b9db4272b49ca155`;

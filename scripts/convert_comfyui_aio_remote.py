@@ -36,6 +36,7 @@ from convert_comfyui_aio import (
 from verify_comfyui_shape_contract import read_url, remote_url
 
 MAX_METADATA_FILE_SIZE = 64 * 1024 * 1024
+PARTIAL_CHECKPOINT_INTERVAL = 64 * 1024 * 1024
 RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 
 
@@ -400,20 +401,23 @@ def stream_weight_file(
     args: argparse.Namespace,
     path: str,
     entry: dict,
-    data_start: int,
+    cursor: int,
     target: BinaryIO,
+    source_digest: hashlib._Hash,
     output_digest: hashlib._Hash,
+    checkpoint,
 ) -> None:
-    source_digest = hashlib.sha256()
-    cursor = 0
     failures = 0
     report_interval = 512 * 1024 * 1024
-    next_report = report_interval
+    next_report = ((cursor // report_interval) + 1) * report_interval
+    next_checkpoint = (
+        ((cursor // PARTIAL_CHECKPOINT_INTERVAL) + 1)
+        * PARTIAL_CHECKPOINT_INTERVAL
+    )
     while cursor < entry["size"]:
         try:
             with open_remote(args, path, cursor, entry["size"]) as source:
                 while cursor < entry["size"]:
-                    chunk_start = cursor
                     data = source.read(
                         min(COPY_CHUNK_SIZE, entry["size"] - cursor)
                     )
@@ -424,11 +428,13 @@ def stream_weight_file(
                         )
                     source_digest.update(data)
                     cursor += len(data)
-                    payload_start = max(chunk_start, data_start)
-                    if cursor > payload_start:
-                        payload = data[payload_start - chunk_start :]
-                        target.write(payload)
-                        output_digest.update(payload)
+                    target.write(data)
+                    output_digest.update(data)
+                    if cursor >= next_checkpoint:
+                        checkpoint(cursor, source_digest.hexdigest())
+                        next_checkpoint = (
+                            (cursor // PARTIAL_CHECKPOINT_INTERVAL) + 1
+                        ) * PARTIAL_CHECKPOINT_INTERVAL
                     if cursor >= next_report or cursor == entry["size"]:
                         print(
                             f"  {path}: {cursor}/{entry['size']} bytes",
@@ -490,7 +496,13 @@ def checkpoint_resume_state(
         "source_lock_sha256": source_lock_sha256,
         "prefix_sha256": hashlib.sha256(prefix).hexdigest(),
     }
-    fresh_state = {**identity, "completed_files": []}
+    fresh_state = {
+        **identity,
+        "completed_files": [],
+        "current_file": None,
+        "current_payload_bytes": 0,
+        "current_source_sha256": None,
+    }
     if not partial.exists() and not state_path.exists():
         return fresh_state, 0, 0
     if args.overwrite:
@@ -521,22 +533,44 @@ def checkpoint_resume_state(
     if not isinstance(completed, list) or completed != paths[: len(completed)]:
         raise RuntimeError(f"invalid completed-file prefix in {state_path}")
 
-    boundary = len(prefix) + sum(payload_sizes[path] for path in completed)
+    completed_boundary = len(prefix) + sum(
+        payload_sizes[path] for path in completed
+    )
+    current_file = state.get("current_file")
+    current_payload_bytes = state.get("current_payload_bytes", 0)
+    current_source_sha256 = state.get("current_source_sha256")
+    expected_current_file = paths[len(completed)] if len(completed) < len(paths) else None
+    if current_file is None:
+        if current_payload_bytes != 0 or current_source_sha256 is not None:
+            raise RuntimeError(f"invalid current-file state in {state_path}")
+    elif (
+        current_file != expected_current_file
+        or not isinstance(current_payload_bytes, int)
+        or not 0 < current_payload_bytes <= payload_sizes[current_file]
+        or not isinstance(current_source_sha256, str)
+        or len(current_source_sha256) != 64
+    ):
+        raise RuntimeError(f"invalid current-file state in {state_path}")
+
+    boundary = completed_boundary + current_payload_bytes
     actual_size = partial.stat().st_size
     if actual_size < boundary:
         raise RuntimeError(
             f"partial checkpoint is shorter than its verified boundary: "
             f"{actual_size} < {boundary}"
         )
-    next_payload_size = (
-        payload_sizes[paths[len(completed)]]
-        if len(completed) < len(paths)
+    remaining_payload_size = (
+        payload_sizes[expected_current_file] - current_payload_bytes
+        if expected_current_file is not None
         else None
     )
-    if next_payload_size is not None and actual_size > boundary + next_payload_size:
+    if (
+        remaining_payload_size is not None
+        and actual_size > boundary + remaining_payload_size
+    ):
         raise RuntimeError(
             f"partial checkpoint exceeds its next recoverable boundary: "
-            f"{actual_size} > {boundary + next_payload_size}"
+            f"{actual_size} > {boundary + remaining_payload_size}"
         )
     with partial.open("rb") as handle:
         if handle.read(len(prefix)) != prefix:
@@ -557,6 +591,38 @@ def update_digest_from_prefix(
             raise EOFError("partial checkpoint ended before its verified boundary")
         digest.update(data)
         remaining -= len(data)
+
+
+def source_digest_from_partial(
+    args: argparse.Namespace,
+    path: str,
+    data_start: int,
+    target: BinaryIO,
+    output_start: int,
+    payload_bytes: int,
+    expected_digest: str | None,
+) -> hashlib._Hash:
+    source_prefix = read_remote_bytes(args, path, (0, data_start - 1))
+    if len(source_prefix) != data_start:
+        raise ValueError(
+            f"{path}: expected {data_start} source header bytes, "
+            f"got {len(source_prefix)}"
+        )
+    digest = hashlib.sha256(source_prefix)
+    target.seek(output_start)
+    remaining = payload_bytes
+    while remaining:
+        data = target.read(min(COPY_CHUNK_SIZE, remaining))
+        if not data:
+            raise EOFError(f"partial checkpoint ended inside {path}")
+        digest.update(data)
+        remaining -= len(data)
+    if expected_digest is not None and digest.hexdigest() != expected_digest:
+        raise RuntimeError(
+            f"partial source digest mismatch for {path}; pass --overwrite to restart"
+        )
+    target.seek(output_start + payload_bytes)
+    return digest
 
 
 def write_checkpoint(
@@ -611,23 +677,64 @@ def write_checkpoint(
                 os.fsync(target.fileno())
                 write_partial_state(state_path, state)
                 output_digest.update(prefix)
+            output_start = len(prefix) + sum(
+                payload_sizes[path] for path in paths[:completed_count]
+            )
             for path in paths[completed_count:]:
                 path_tensors = by_path[path]
                 entry = weight_entries[path]
                 data_start = path_tensors[0].offset
+                resume_payload_bytes = (
+                    state["current_payload_bytes"]
+                    if state.get("current_file") == path
+                    else 0
+                )
+                source_digest = source_digest_from_partial(
+                    args,
+                    path,
+                    data_start,
+                    target,
+                    output_start,
+                    resume_payload_bytes,
+                    state.get("current_source_sha256")
+                    if resume_payload_bytes
+                    else None,
+                )
+
+                def checkpoint(
+                    source_cursor,
+                    source_sha256,
+                    current_path=path,
+                    source_data_start=data_start,
+                ):
+                    target.flush()
+                    os.fsync(target.fileno())
+                    state["current_file"] = current_path
+                    state["current_payload_bytes"] = (
+                        source_cursor - source_data_start
+                    )
+                    state["current_source_sha256"] = source_sha256
+                    write_partial_state(state_path, state)
+
                 print(f"Streaming {path} ({entry['size']} bytes)", flush=True)
                 stream_weight_file(
                     args,
                     path,
                     entry,
-                    data_start,
+                    data_start + resume_payload_bytes,
                     target,
+                    source_digest,
                     output_digest,
+                    checkpoint,
                 )
                 target.flush()
                 os.fsync(target.fileno())
                 state["completed_files"].append(path)
+                state["current_file"] = None
+                state["current_payload_bytes"] = 0
+                state["current_source_sha256"] = None
                 write_partial_state(state_path, state)
+                output_start += payload_sizes[path]
 
             tokenizer = tensors[-1]
             if tokenizer.key != TOKENIZER_KEY or tokenizer.data is None:
